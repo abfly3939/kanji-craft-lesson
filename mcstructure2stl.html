@@ -88,13 +88,14 @@
 
   <script type="module">
     /***** ライブラリ読み込み *****/
-    import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
-    import { OrbitControls } from 'https://unpkg.com/three@0.164.0/examples/jsm/controls/OrbitControls.js';
-    import { STLExporter } from 'https://unpkg.com/three@0.164.0/examples/jsm/exporters/STLExporter.js';
-    import { mergeGeometries } from 'https://unpkg.com/three@0.164.0/examples/jsm/utils/BufferGeometryUtils.js';
-    // NBT パーサ（ブラウザ用ビルド）＋ Buffer polyfill
-    import * as nbt from 'https://unpkg.com/prismarine-nbt@2.6.0/dist/index-browser.js';
-    import { Buffer } from 'https://unpkg.com/buffer@6.0.3/index.js';
+    import * as THREE from "https://unpkg.com/three@0.164.0/build/three.module.js";
+    import { OrbitControls } from "https://unpkg.com/three@0.164.0/examples/jsm/controls/OrbitControls.js";
+    import { STLExporter } from "https://unpkg.com/three@0.164.0/examples/jsm/exporters/STLExporter.js";
+    import { mergeGeometries } from "https://unpkg.com/three@0.164.0/examples/jsm/utils/BufferGeometryUtils.js";
+    
+    // NBT パーサ
+    import * as nbt from "https://esm.sh/prismarine-nbt@2.6.0";
+    import { Buffer } from "https://esm.sh/buffer@6.0.3";
 
     /***** UI 参照 *****/
     const modeEl = document.getElementById('mode');
