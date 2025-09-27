@@ -2,13 +2,18 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <title>Kanji Blocks → STL (Three.js)</title>
+  <title>mcstructure → Preview & STL (Three.js)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { margin: 0; font-family: system-ui, sans-serif; display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
+    :root { --side: 320px; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", sans-serif;
+      display: grid; grid-template-columns: var(--side) 1fr; height: 100%;
+    }
     aside { padding: 16px; border-right: 1px solid #ddd; overflow: auto; }
-    main { position: relative; }
-    #viewport { position:absolute; inset:0; }
+    main { position: relative; background: #fff; }
+    #viewport { position:absolute; inset:0; display:block; }
     fieldset { border: 1px solid #ccc; margin: 0 0 12px; padding: 10px; }
     legend { font-weight: 600; }
     label { display:block; margin: 6px 0 2px; }
@@ -16,21 +21,28 @@
     button { width: 100%; padding: 10px; margin-top: 8px; }
     small { color:#666; }
     .row { display:flex; gap:8px; }
-    .row > * { flex: 1; }
+    .row > * { flex: 1; min-width: 0; }
+    code { background: #f6f6f6; padding: 1px 4px; border-radius: 3px; }
   </style>
 </head>
 <body>
   <aside>
-    <h2>漢字ブロック → STL</h2>
+    <h2>mcstructure → STL（ブラウザ完結）</h2>
 
     <fieldset>
-      <legend>入力データ</legend>
+      <legend>.mcstructure 読み込み</legend>
+      <input id="mcstructureFile" type="file" accept=".mcstructure" />
+      <button id="loadMc">読み込んでプレビュー</button>
+      <small>※ <b>.mcstructure は JSON ではなく NBT バイナリ</b>です。内部のパレットとブロック参照を解決してボクセル化します。</small>
+    </fieldset>
+
+    <fieldset>
+      <legend>代替入力（手動）</legend>
       <label>モード</label>
       <select id="mode">
         <option value="positions">ブロック座標（JSON配列）</option>
         <option value="bitmap">2Dビットマップ（文字列配列）</option>
       </select>
-
       <label>データ</label>
       <textarea id="input" rows="10" spellcheck="false">{
   "positions": [[0,0,0],[1,0,0],[2,0,0],[3,0,0],[0,1,0],[0,2,0],[3,1,0],[3,2,0],[0,3,0],[1,3,0],[2,3,0],[3,3,0]],
@@ -43,7 +55,7 @@
     </fieldset>
 
     <fieldset>
-      <legend>プレビュー設定</legend>
+      <legend>プレビュー／出力設定</legend>
       <div class="row">
         <div>
           <label>倍率</label>
@@ -75,12 +87,16 @@
   </main>
 
   <script type="module">
+    /***** ライブラリ読み込み *****/
     import * as THREE from 'https://unpkg.com/three@0.164.0/build/three.module.js';
     import { OrbitControls } from 'https://unpkg.com/three@0.164.0/examples/jsm/controls/OrbitControls.js';
     import { STLExporter } from 'https://unpkg.com/three@0.164.0/examples/jsm/exporters/STLExporter.js';
     import { mergeGeometries } from 'https://unpkg.com/three@0.164.0/examples/jsm/utils/BufferGeometryUtils.js';
+    // NBT パーサ（ブラウザ用ビルド）＋ Buffer polyfill
+    import * as nbt from 'https://unpkg.com/prismarine-nbt@2.6.0/dist/index-browser.js';
+    import { Buffer } from 'https://unpkg.com/buffer@6.0.3/index.js';
 
-    // ---------- UI ----------
+    /***** UI 参照 *****/
     const modeEl = document.getElementById('mode');
     const inputEl = document.getElementById('input');
     const scaleEl = document.getElementById('scale');
@@ -88,14 +104,16 @@
     const buildBtn = document.getElementById('build');
     const exportBtn = document.getElementById('export');
     const statsEl = document.getElementById('stats');
+    const mcFileEl = document.getElementById('mcstructureFile');
+    const loadMcBtn = document.getElementById('loadMc');
 
-    // ---------- Three.js 基本セットアップ ----------
+    /***** Three.js セットアップ *****/
     const canvas = document.getElementById('viewport');
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xffffff);
 
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
     camera.position.set(80, 60, 80);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -113,7 +131,6 @@
     let meshGroup = new THREE.Group();
     scene.add(meshGroup);
 
-    // レイアウト
     function resize() {
       const rect = canvas.parentElement.getBoundingClientRect();
       renderer.setSize(rect.width, rect.height, false);
@@ -123,16 +140,14 @@
     window.addEventListener('resize', resize);
     resize();
 
-    // アニメーション
-    function animate() {
+    (function animate(){
       requestAnimationFrame(animate);
       controls.update();
       renderer.render(scene, camera);
-    }
-    animate();
+    })();
 
-    // ---------- データ→メッシュ ----------
-    function parseInput() {
+    /***** 入力→positions 配列 *****/
+    function parseManualInput() {
       let data;
       try {
         data = JSON.parse(inputEl.value);
@@ -150,7 +165,6 @@
         if (!Array.isArray(data.bitmap)) throw new Error('bitmap 配列が必要です');
         const z = Number(data.z ?? 0);
         const size = Number(data.size ?? 1);
-        // bitmap から positions を生成（(x,y,z)）
         const positions = [];
         for (let y = 0; y < data.bitmap.length; y++) {
           const row = String(data.bitmap[y]);
@@ -162,17 +176,93 @@
       }
     }
 
-    function buildMesh() {
-      // 既存をクリア
+    /***** mcstructure 読み込み → positions 生成 *****/
+    async function parseMcstructureFile(file) {
+      const buf = await file.arrayBuffer();
+      // NBT パース（圧縮は自動判別）
+      const { parsed } = await nbt.parse(Buffer.from(buf));
+      const root = parsed.value;
+      console.log('NBT root:', parsed); // 構造確認用
+
+      // よくある配置：root.structure.value.* もしくは root.* 直下
+      const struct = (root.structure?.value) ?? root;
+
+      // サイズ [x, y, z]
+      const sizeTag = struct.size?.value ?? struct['size']?.value;
+      if (!Array.isArray(sizeTag)) throw new Error('size 情報が見つかりません');
+      const size = sizeTag.map(n => Number(n));
+      const [sx, sy, sz] = size;
+
+      // パレット抽出（ブロック名の配列）
+      let paletteEntries = [];
+      if (Array.isArray(struct.palette?.value)) {
+        const p0 = struct.palette.value[0]?.value ?? struct.palette.value[0];
+        const blockPalette = p0.block_palette?.value ?? p0['block_palette']?.value;
+        if (Array.isArray(blockPalette)) {
+          paletteEntries = blockPalette.map(e =>
+            (e.value?.name?.value) || (e.value?.Name?.value) || 'minecraft:unknown'
+          );
+        }
+      }
+      if (paletteEntries.length === 0) {
+        console.warn('palette が取得できませんでした。空気判定が効かない可能性があります。');
+      }
+
+      // block_indices：体積ぶんのパレット参照インデックス
+      const indicesList = struct.block_indices?.value;
+      if (!Array.isArray(indicesList) || indicesList.length === 0) {
+        throw new Error('block_indices が見つかりません');
+      }
+
+      // 配列に復元（32bit/8bitなど実装差異を吸収）
+      let indices = [];
+      for (const part of indicesList) {
+        const v = part?.value ?? part;
+        // 典型：{ data: <Uint8Array/Uint32Array> } or 直接 TypedArray
+        if (v?.data instanceof Uint8Array || v?.data instanceof Uint16Array || v?.data instanceof Uint32Array) {
+          indices = indices.concat(Array.from(v.data));
+        } else if (v instanceof Uint8Array || v instanceof Uint16Array || v instanceof Uint32Array) {
+          indices = indices.concat(Array.from(v));
+        } else if (Array.isArray(v)) {
+          indices = indices.concat(v.map(Number));
+        } else if (Array.isArray(v?.value)) {
+          indices = indices.concat(v.value.map(Number));
+        } else {
+          console.warn('未知の block_indices 片の形です:', part);
+        }
+      }
+      const total = sx * sy * sz;
+      if (indices.length < total) {
+        console.warn(`block_indices 長が不足 (${indices.length} < ${total})。並びや圧縮形式が異なる可能性があります。`);
+      }
+
+      const isAir = (name) => name === 'minecraft:air' || name === 'minecraft:cave_air' || name === 'minecraft:void_air';
+
+      // 走査順の前提：x 最内、y 次、z 最外（x + y*sx + z*sx*sy）
+      const positions = [];
+      for (let z = 0; z < sz; z++) {
+        for (let y = 0; y < sy; y++) {
+          for (let x = 0; x < sx; x++) {
+            const idx = x + y * sx + z * sx * sy;
+            const pIndex = indices[idx] ?? 0;
+            const name = paletteEntries[pIndex] ?? 'minecraft:unknown';
+            if (!isAir(name)) positions.push([x, y, z]);
+          }
+        }
+      }
+      return { positions, size: 1 };
+    }
+
+    /***** メッシュ生成・プレビュー *****/
+    function buildMeshFromPositions(positions) {
       meshGroup.clear();
 
-      const { positions, size } = parseInput();
       const voxelBase = Number(voxelSizeEl.value || 1);
       const scale = Number(scaleEl.value || 1);
-      const unit = voxelBase * scale; // mm 単位想定
-
-      // Box をまとめて一個のジオメトリに結合（高速化）
+      const unit = voxelBase * scale; // mm
       const half = unit / 2;
+
+      // Box を一括結合して高速化
       const geoms = [];
       const box = new THREE.BoxGeometry(unit, unit, unit);
       for (const [x, y, z] of positions) {
@@ -187,30 +277,37 @@
       const merged = mergeGeometries(geoms, false);
       merged.computeBoundingBox();
 
-      // マテリアルはプレビュー用（STL は形状のみ）
       const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.6 }));
       meshGroup.add(mesh);
 
-      // カメラを自動で寄せる
+      // カメラ自動調整
       const bb = merged.boundingBox;
       const sizeV = new THREE.Vector3().subVectors(bb.max, bb.min);
       const center = new THREE.Vector3().addVectors(bb.min, bb.max).multiplyScalar(0.5);
-      controls.target.copy(center);
       const radius = sizeV.length() * 0.6 + unit;
+
+      controls.target.copy(center);
       camera.position.copy(center).add(new THREE.Vector3(radius, radius * 0.75, radius));
       camera.near = Math.max(0.1, unit * 0.1);
-      camera.far = radius * 10 + unit;
+      camera.far = Math.max(2000, radius * 10 + unit);
       camera.updateProjectionMatrix();
 
-      statsEl.textContent = `ブロック数: ${positions.length} / 立方体サイズ: ${unit.toFixed(2)} mm / 幅×奥行×高さ: ${sizeV.x.toFixed(2)} × ${sizeV.z.toFixed(2)} × ${sizeV.y.toFixed(2)} mm`;
+      statsEl.textContent =
+        `ブロック数: ${positions.length} / 立方体サイズ: ${unit.toFixed(2)} mm / ` +
+        `幅×奥行×高さ: ${sizeV.x.toFixed(2)} × ${sizeV.z.toFixed(2)} × ${sizeV.y.toFixed(2)} mm`;
     }
 
+    function buildMesh() {
+      const { positions } = parseManualInput();
+      buildMeshFromPositions(positions);
+    }
+
+    /***** STL 出力 *****/
     function exportSTL() {
       if (meshGroup.children.length === 0) {
         alert('先にプレビューを生成してください。');
         return;
       }
-      // 複数メッシュ対応：全体を 1 メッシュ化してから出力
       const allGeoms = [];
       meshGroup.traverse(obj => {
         if (obj.isMesh && obj.geometry) {
@@ -227,19 +324,35 @@
       const blob = new Blob([stl], { type: 'application/vnd.ms-pki.stl' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'kanji_blocks.stl';
+      a.download = 'structure_export.stl';
       a.click();
       URL.revokeObjectURL(a.href);
     }
 
-    // 初期表示
+    /***** イベント *****/
     buildBtn.addEventListener('click', () => {
-      try { buildMesh(); } catch (e) { console.error(e); }
+      try { buildMesh(); } catch (e) { console.error(e); alert('プレビュー生成に失敗しました。'); }
     });
     exportBtn.addEventListener('click', () => {
-      try { exportSTL(); } catch (e) { console.error(e); }
+      try { exportSTL(); } catch (e) { console.error(e); alert('STL 書き出しに失敗しました。'); }
     });
-    buildMesh();
+    loadMcBtn?.addEventListener('click', async () => {
+      const f = mcFileEl?.files?.[0];
+      if (!f) { alert('.mcstructure ファイルを選択してください'); return; }
+      try {
+        const { positions } = await parseMcstructureFile(f);
+        // UI へ流し込んで可視化
+        modeEl.value = 'positions';
+        inputEl.value = JSON.stringify({ positions, size: 1 }, null, 2);
+        buildMeshFromPositions(positions);
+      } catch (e) {
+        console.error(e);
+        alert('mcstructure の読み込みに失敗しました。コンソールのログをご確認ください。');
+      }
+    });
+
+    // 初期プレビュー
+    try { buildMesh(); } catch {}
   </script>
 </body>
 </html>
