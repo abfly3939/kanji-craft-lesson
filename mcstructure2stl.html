@@ -24,6 +24,16 @@
     .row > * { flex: 1; min-width: 0; }
     code { background: #f6f6f6; padding: 1px 4px; border-radius: 3px; }
   </style>
+
+  <!-- Three.js を import map で解決 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.164.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.164.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <aside>
@@ -87,12 +97,12 @@
   </main>
 
   <script type="module">
-    /***** ライブラリ読み込み *****/
-    import * as THREE from "https://unpkg.com/three@0.164.0/build/three.module.js";
-    import { OrbitControls } from "https://unpkg.com/three@0.164.0/examples/jsm/controls/OrbitControls.js";
-    import { STLExporter } from "https://unpkg.com/three@0.164.0/examples/jsm/exporters/STLExporter.js";
-    import { mergeGeometries } from "https://unpkg.com/three@0.164.0/examples/jsm/utils/BufferGeometryUtils.js";
-    
+    /***** ライブラリ読み込み（import map を使用） *****/
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
     // NBT パーサ（依存をバンドル）
     import * as nbt from "https://esm.sh/prismarine-nbt@2.6.0?bundle";
 
