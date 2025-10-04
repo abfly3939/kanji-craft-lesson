@@ -12,6 +12,7 @@ github:abfly3939/kanji-craft#v1.0.0
 ### 「漢字クラフト」ブロックをつかう
 ツールボックスから **「漢字クラフト」** をクリック。  
 上にある **「エージェントに...」** ブロックをもってくる。
+<img src="https://raw.githubusercontent.com/abfly3939/kanji-craft-lesson/main/docs/block.png" title="block.png" width="640">
 
 
 ## ステップ2
@@ -35,6 +36,7 @@ MakeCodeの、**「エージェントに...」** ブロック、
 「壁」か「床」を選び、原点の位置を決めて実行すると、エージェントが一つずつブロックを置いて漢字を描いてくれます。  
 
 ※大きな文字の場合は処理に少し時間がかかります。
+
 
 
 
