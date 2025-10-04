@@ -93,9 +93,8 @@
     import { STLExporter } from "https://unpkg.com/three@0.164.0/examples/jsm/exporters/STLExporter.js";
     import { mergeGeometries } from "https://unpkg.com/three@0.164.0/examples/jsm/utils/BufferGeometryUtils.js";
     
-    // NBT パーサ
-    import * as nbt from "https://esm.sh/prismarine-nbt@2.6.0";
-    import { Buffer } from "https://esm.sh/buffer@6.0.3";
+    // NBT パーサ（依存をバンドル）
+    import * as nbt from "https://esm.sh/prismarine-nbt@2.6.0?bundle";
 
     /***** UI 参照 *****/
     const modeEl = document.getElementById('mode');
@@ -134,6 +133,8 @@
 
     function resize() {
       const rect = canvas.parentElement.getBoundingClientRect();
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      renderer.setPixelRatio(ratio);
       renderer.setSize(rect.width, rect.height, false);
       camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
@@ -177,67 +178,64 @@
       }
     }
 
-    /***** mcstructure 読み込み → positions 生成 *****/
+    /***** mcstructure 読み込み → positions 生成（堅牢化版） *****/
     async function parseMcstructureFile(file) {
       const buf = await file.arrayBuffer();
-      // NBT パース（圧縮は自動判別）
-      const { parsed } = await nbt.parse(Buffer.from(buf));
-      const root = parsed.value;
-      console.log('NBT root:', parsed); // 構造確認用
 
-      // よくある配置：root.structure.value.* もしくは root.* 直下
-      const struct = (root.structure?.value) ?? root;
+      // Buffer ではなく Uint8Array を渡す（ブラウザ互換）
+      const { parsed } = await nbt.parse(new Uint8Array(buf));
+      // ネストされた .value を除去してシンプルに
+      const root = nbt.simplify(parsed);
+      console.log('NBT root (simplified):', root); // 構造確認用
 
-      // サイズ [x, y, z]
-      const sizeTag = struct.size?.value ?? struct['size']?.value;
-      if (!Array.isArray(sizeTag)) throw new Error('size 情報が見つかりません');
-      const size = sizeTag.map(n => Number(n));
-      const [sx, sy, sz] = size;
+      // よくある配置：root.structure.* もしくは root.* 直下
+      const struct = root.structure ?? root;
 
-      // パレット抽出（ブロック名の配列）
+      // サイズ [x, y, z] または {x,y,z} の両対応
+      let size = struct.size;
+      if (!size) throw new Error('size 情報が見つかりません');
+      if (!Array.isArray(size)) size = [Number(size.x), Number(size.y), Number(size.z)];
+      const [sx, sy, sz] = size.map(Number);
+
+      // パレット抽出（Bedrock は block_palette が一般的）
       let paletteEntries = [];
-      if (Array.isArray(struct.palette?.value)) {
-        const p0 = struct.palette.value[0]?.value ?? struct.palette.value[0];
-        const blockPalette = p0.block_palette?.value ?? p0['block_palette']?.value;
+      if (Array.isArray(struct.palette) && struct.palette[0]) {
+        const p0 = struct.palette[0];
+        const blockPalette = p0.block_palette ?? p0.BlockPalette ?? p0['block_palette'];
         if (Array.isArray(blockPalette)) {
-          paletteEntries = blockPalette.map(e =>
-            (e.value?.name?.value) || (e.value?.Name?.value) || 'minecraft:unknown'
-          );
+          paletteEntries = blockPalette.map(e => e?.name ?? e?.Name ?? 'minecraft:unknown');
         }
       }
       if (paletteEntries.length === 0) {
-        console.warn('palette が取得できませんでした。空気判定が効かない可能性があります。');
+        console.warn('palette が取得できませんでした。フォールバックとして index 0 を空気扱いします。');
       }
 
-      // block_indices：体積ぶんのパレット参照インデックス
-      const indicesList = struct.block_indices?.value;
-      if (!Array.isArray(indicesList) || indicesList.length === 0) {
-        throw new Error('block_indices が見つかりません');
-      }
+      // block_indices：型の差異を包括的に復元
+      const indicesSrc = struct.block_indices ?? struct.BlockIndices ?? struct['block_indices'];
+      if (!indicesSrc) throw new Error('block_indices が見つかりません');
 
-      // 配列に復元（32bit/8bitなど実装差異を吸収）
-      let indices = [];
-      for (const part of indicesList) {
-        const v = part?.value ?? part;
-        // 典型：{ data: <Uint8Array/Uint32Array> } or 直接 TypedArray
-        if (v?.data instanceof Uint8Array || v?.data instanceof Uint16Array || v?.data instanceof Uint32Array) {
-          indices = indices.concat(Array.from(v.data));
-        } else if (v instanceof Uint8Array || v instanceof Uint16Array || v instanceof Uint32Array) {
-          indices = indices.concat(Array.from(v));
-        } else if (Array.isArray(v)) {
-          indices = indices.concat(v.map(Number));
-        } else if (Array.isArray(v?.value)) {
-          indices = indices.concat(v.value.map(Number));
-        } else {
-          console.warn('未知の block_indices 片の形です:', part);
-        }
-      }
+      const indices = [];
+      const pushAny = (v) => {
+        if (!v) return;
+        if (ArrayBuffer.isView(v)) indices.push(...v);
+        else if (Array.isArray(v)) indices.push(...v.map(Number));
+        else if (v.data && ArrayBuffer.isView(v.data)) indices.push(...v.data);
+        else if (v.value && Array.isArray(v.value)) indices.push(...v.value.map(Number));
+        else console.warn('未知の block_indices 片の形です:', v);
+      };
+      Array.isArray(indicesSrc) ? indicesSrc.forEach(pushAny) : pushAny(indicesSrc);
+
       const total = sx * sy * sz;
       if (indices.length < total) {
         console.warn(`block_indices 長が不足 (${indices.length} < ${total})。並びや圧縮形式が異なる可能性があります。`);
       }
 
-      const isAir = (name) => name === 'minecraft:air' || name === 'minecraft:cave_air' || name === 'minecraft:void_air';
+      const isAirName = (name) => name === 'minecraft:air' || name === 'minecraft:cave_air' || name === 'minecraft:void_air';
+      const isAirIndex = (idx) => {
+        if (paletteEntries.length === 0) return idx === 0; // フォールバック：パレット不明なら index 0 を空気扱い
+        const name = paletteEntries[idx] ?? 'minecraft:unknown';
+        return isAirName(name);
+      };
 
       // 走査順の前提：x 最内、y 次、z 最外（x + y*sx + z*sx*sy）
       const positions = [];
@@ -246,8 +244,7 @@
           for (let x = 0; x < sx; x++) {
             const idx = x + y * sx + z * sx * sy;
             const pIndex = indices[idx] ?? 0;
-            const name = paletteEntries[pIndex] ?? 'minecraft:unknown';
-            if (!isAir(name)) positions.push([x, y, z]);
+            if (!isAirIndex(pIndex)) positions.push([x, y, z]);
           }
         }
       }
@@ -322,7 +319,7 @@
       const exporter = new STLExporter();
       const stl = exporter.parse(new THREE.Mesh(merged), { binary: true });
 
-      const blob = new Blob([stl], { type: 'application/vnd.ms-pki.stl' });
+      const blob = new Blob([stl], { type: 'model/stl' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = 'structure_export.stl';
