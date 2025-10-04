@@ -9,19 +9,29 @@ github:abfly3939/kanji-craft#v1.0.0
 
 
 ## ステップ1
-### 「漢字クラフト」ブロックをつかう
-ツールボックスから **「漢字クラフト」** をクリック。  
-上にある **「エージェントに...」** ブロックをもってくる。
-<img src="https://raw.githubusercontent.com/abfly3939/kanji-craft-lesson/main/docs/img1.png" title="block.png" width="640">
+### ブロックをおく
+エージェントが文字を書きはじめる場所をえらぶブロックを **「エージェント」** の中からえらびます。
 
+<img src="https://raw.githubusercontent.com/abfly3939/kanji-craft-lesson/main/docs/img2.png" higth="200">
+
+つぎに、ツールボックスから **「漢字クラフト」** をクリック。  
+そこにあるブロックをもってきて、ブロックをつなげる。
+
+<img src="https://raw.githubusercontent.com/abfly3939/kanji-craft-lesson/main/docs/img1.png" higth="200">
+
+すべてつなげるとこんな感じになります。
+
+<img src="https://raw.githubusercontent.com/abfly3939/kanji-craft-lesson/main/docs/img3.png" higth="500">
 
 ## ステップ2
 ### Webツールから変換
 「[漢字クラフト Webツール](https://abfly3939.github.io/kanji-craft-lesson/)」を開きます。  
 
-1文字だけ入力して、**16進数コードをコピー** します。  
+文字を入力すると、**16進数コード** の書き方に変わります。  
 
-コピーが終わったらMinecraftに戻ってきてください。
+Minecraftに戻ってきて、
+*「エージェントに...」** ブロックの、(" ")になっている場所に、
+1文字分の**16進数コード** をそのまま入れます。 
 
 例：  
 16x16:なんとかかんとか
@@ -29,13 +39,11 @@ github:abfly3939/kanji-craft#v1.0.0
 
 
 ## ステップ3
-### コードを貼り付ける
-MakeCodeの、**「エージェントに...」** ブロック、  
-コピーしたコードを「文字」の部分に貼り付けます。  
+### 実行
+エージェントに文字を書いてもらう向きを「床」「壁」どちらかえらんで、
+原点の位置を決めて実行すると、エージェントが一つずつブロックを置いて漢字を描いてくれます。  
 
-「壁」か「床」を選び、原点の位置を決めて実行すると、エージェントが一つずつブロックを置いて漢字を描いてくれます。  
 
-※大きな文字の場合は処理に少し時間がかかります。
 
 
 
