@@ -48,19 +48,46 @@
       <legend>.glb 読み込み</legend>
       <input id="glbFile" type="file" accept=".glb" />
       <button id="loadGlb">読み込んでプレビュー</button>
-      <small>※ GLB はメッシュをそのままプレビューします（STLは無色です）。</small>
+      <small>※ GLB はメッシュと材質をそのままプレビューします（STLは無色）。</small>
     </fieldset>
 
     <details>
-      <summary>プレビュー（表示・陰影）</summary>
+      <summary>プレビュー（表示・輪郭）</summary>
       <div class="row">
         <div>
           <label>背景色</label>
           <input id="bgColor" type="color" value="#e5e5e5" />
         </div>
         <div>
-          <label>メッシュ色（印刷物イメージ）</label>
+          <label>表示モード</label>
+          <select id="shadeMode">
+            <option value="glb" selected>GLBの材質（推奨）</option>
+            <option value="gray">単色グレー（PBR）</option>
+            <option value="normal">法線カラー（診断）</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>メッシュ色（単色グレー用）</label>
           <input id="meshColor" type="color" value="#bfbfbf" />
+        </div>
+        <div>
+          <label>エッジ線</label>
+          <select id="edgeEnabled">
+            <option value="1" selected>表示</option>
+            <option value="0">非表示</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>エッジ色</label>
+          <input id="edgeColor" type="color" value="#444444" />
+        </div>
+        <div>
+          <label>エッジ閾値（度）</label>
+          <input id="edgeDeg" type="number" value="20" step="1" min="1" max="90" />
         </div>
       </div>
       <div class="row">
@@ -72,24 +99,11 @@
           </select>
         </div>
         <div>
-          <label>SSAO（凹凸の陰影）</label>
-          <select id="ssaoEnabled">
-            <option value="1" selected>有効</option>
-            <option value="0">無効</option>
-          </select>
+          <label>金属/粗さ（単色グレー見た目）</label>
+          <input id="matParams" type="text" value="metal=0.0,rough=0.8" />
         </div>
       </div>
-      <div class="row">
-        <div>
-          <label>SSAO 強度</label>
-          <input id="ssaoIntensity" type="number" value="0.8" step="0.1" min="0" />
-        </div>
-        <div>
-          <label>金属/粗さ（見た目）</label>
-          <input id="matParams" type="text" value="metal=0.0,rough=0.9" />
-        </div>
-      </div>
-      <small class="hint">ソフトシャドウ＋床の影受け＋SSAOで輪郭と凹凸を見やすくします（プレビューのみ）。</small>
+      <small class="hint">※ GLB材質＋エッジ表示が最も形状を把握しやすい構成です。</small>
     </details>
 
     <details>
@@ -119,7 +133,7 @@
         <div><label><input id="flipY" type="checkbox" /> Y 反転（前後反転）</label></div>
         <div><label><input id="flipZ" type="checkbox" /> Z 反転（左右反転）</label></div>
       </div>
-      <small class="hint">既定（Z / 反転なし）で Bambu Lab等に適合します。必要時のみ変更してください。</small>
+      <small class="hint">既定（Z / 反転なし）で Bambu Lab 等に適合。必要時のみ変更してください。</small>
     </details>
 
     <div class="row">
@@ -135,17 +149,14 @@
   </main>
 
   <script type="module">
-    /***** ライブラリ読み込み（import map を使用） *****/
+    /***** ライブラリ読み込み *****/
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { STLExporter } from 'three/addons/exporters/STLExporter.js';
     import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-    import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
 
-    /***** UI 参照 *****/
+    /***** UI *****/
     const glbFileEl = document.getElementById('glbFile');
     const loadGlbBtn = document.getElementById('loadGlb');
     const mmPerUnitEl = document.getElementById('mmPerUnit');
@@ -161,18 +172,20 @@
     const gridVisibleEl = document.getElementById('gridVisible');
     const meshColorEl = document.getElementById('meshColor');
     const matParamsEl = document.getElementById('matParams');
-    const ssaoEnabledEl = document.getElementById('ssaoEnabled');
-    const ssaoIntensityEl = document.getElementById('ssaoIntensity');
+    const shadeModeEl = document.getElementById('shadeMode');
+    const edgeEnabledEl = document.getElementById('edgeEnabled');
+    const edgeColorEl = document.getElementById('edgeColor');
+    const edgeDegEl = document.getElementById('edgeDeg');
 
-    /***** Three.js セットアップ *****/
+    /***** Three.js 基本セットアップ *****/
     const canvas = document.getElementById('viewport');
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    //renderer.outputColorSpace = THREE.SRGBColorSpace; // 必要に応じて
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#e5e5e5'); // 背景
+    scene.background = new THREE.Color('#e5e5e5');
 
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 20000);
     camera.position.set(3, 2.5, 3);
@@ -180,34 +193,36 @@
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    // ライティング：直射＋環境＋空の光（ヘミ）
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    dirLight.position.set(4, 6, 4);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.set(2048, 2048);
-    dirLight.shadow.camera.near = 0.1;
-    dirLight.shadow.camera.far = 50;
-    dirLight.shadow.camera.left = -15;
-    dirLight.shadow.camera.right = 15;
-    dirLight.shadow.camera.top = 15;
-    dirLight.shadow.camera.bottom = -15;
-    scene.add(dirLight);
+    // ライト（キー＋リム）
+    const dir1 = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir1.position.set(4, 6, 4);
+    dir1.castShadow = true;
+    dir1.shadow.mapSize.set(2048, 2048);
+    dir1.shadow.camera.near = 0.1;
+    dir1.shadow.camera.far = 50;
+    dir1.shadow.camera.left = -15;
+    dir1.shadow.camera.right = 15;
+    dir1.shadow.camera.top = 15;
+    dir1.shadow.camera.bottom = -15;
+    scene.add(dir1);
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0xdddddd, 0.5);
-    scene.add(hemi);
-    scene.add(new THREE.AmbientLight(0xf0f0f0, 0.2));
+    const dir2 = new THREE.DirectionalLight(0xffffff, 0.4);
+    dir2.position.set(-6, 3, -4);
+    scene.add(dir2);
 
-    // グリッド＆影受け床（ShadowMaterial）
+    scene.add(new THREE.AmbientLight(0xf0f0f0, 0.25));
+
+    // グリッド＆影受け床
     const grid = new THREE.GridHelper(10, 10, 0x666666, 0xaaaaaa);
     grid.position.y = 0;
     scene.add(grid);
 
     const shadowPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(100, 100),
-      new THREE.ShadowMaterial({ opacity: 0.25 })
+      new THREE.ShadowMaterial({ opacity: 0.22 })
     );
-    shadowPlane.rotation.x = -Math.PI / 2; // XZ 平面
-    shadowPlane.position.y = 0; // 原点を床に
+    shadowPlane.rotation.x = -Math.PI / 2;
+    shadowPlane.position.y = 0;
     shadowPlane.receiveShadow = true;
     scene.add(shadowPlane);
 
@@ -215,69 +230,23 @@
     let meshGroup = new THREE.Group();
     scene.add(meshGroup);
 
-    // ポストプロセス（SSAO）
-    const composer = new EffectComposer(renderer);
-    const renderPass = new RenderPass(scene, camera);
-    composer.addPass(renderPass);
-    const ssaoPass = new SSAOPass(scene, camera, 512, 512);
-    ssaoPass.kernelRadius = 8;
-    ssaoPass.minDistance = 0.001;
-    ssaoPass.maxDistance = 0.1;
-    ssaoPass.output = SSAOPass.OUTPUT.Default;
-    composer.addPass(ssaoPass);
-
-    function applyUiVisuals() {
-      scene.background = new THREE.Color(bgColorEl.value || '#e5e5e5');
-      grid.visible = gridVisibleEl.value === '1';
-      shadowPlane.visible = grid.visible; // グリッドと床影の表示を連動
-
-      // メッシュ表示色・質感（プレビュー専用）
-      const color = new THREE.Color(meshColorEl.value || '#bfbfbf');
-      let metal = 0.0, rough = 0.9;
-      const m = (matParamsEl.value || '').split(',').reduce((acc, kv) => {
-        const [k,v] = kv.split('=').map(s => String(s || '').trim());
-        if (!k || v==null) return acc;
-        acc[k] = Number(v);
-        return acc;
-      }, {});
-      if (Number.isFinite(m.metal)) metal = m.metal;
-      if (Number.isFinite(m.rough)) rough = m.rough;
-
-      meshGroup.traverse(obj => {
-        if (obj.isMesh) {
-          obj.castShadow = true;
-          obj.receiveShadow = true;
-          obj.material = new THREE.MeshStandardMaterial({
-            color, metalness: metal, roughness: rough, side: THREE.DoubleSide
-          });
-        }
-      });
-
-      // SSAO の有効/強度
-      const enabled = ssaoEnabledEl.value === '1';
-      ssaoPass.enabled = enabled;
-      const intensity = Number(ssaoIntensityEl.value || 0.8);
-      ssaoPass.kernelRadius = Math.max(0, Math.min(32, 8 * intensity)); // 目安で連動
-    }
-
     function resize() {
       const rect = canvas.parentElement.getBoundingClientRect();
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       renderer.setPixelRatio(ratio);
       renderer.setSize(rect.width, rect.height, false);
-      composer.setSize(rect.width, rect.height);
       camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
     }
     window.addEventListener('resize', resize);
-    [bgColorEl, gridVisibleEl, meshColorEl, matParamsEl, ssaoEnabledEl, ssaoIntensityEl]
-      .forEach(el => el.addEventListener('change', applyUiVisuals));
+    [bgColorEl, gridVisibleEl, meshColorEl, matParamsEl, shadeModeEl, edgeEnabledEl, edgeColorEl, edgeDegEl]
+      .forEach(el => el.addEventListener('change', applyAppearance));
     resize();
 
     (function animate(){
       requestAnimationFrame(animate);
       controls.update();
-      composer.render();
+      renderer.render(scene, camera);
     })();
 
     /***** カメラフレーミング *****/
@@ -299,7 +268,7 @@
       camera.far = Math.max(2000, dist * 10);
       camera.updateProjectionMatrix();
 
-      // 床（影）をモデル底面に合わせる
+      // 床をモデル底面に合わせる
       shadowPlane.position.y = box.min.y;
       grid.position.y = box.min.y + 0.001;
     }
@@ -313,6 +282,73 @@
         `mm出力スケール: ${(Number(mmPerUnitEl.value) * Number(uniformScaleEl.value)).toFixed(2)} mm/unit`;
     }
 
+    /***** 見た目の適用（材質とエッジ） *****/
+    function applyAppearance() {
+      scene.background = new THREE.Color(bgColorEl.value || '#e5e5e5');
+      grid.visible = gridVisibleEl.value === '1';
+      shadowPlane.visible = grid.visible;
+
+      const mode = (shadeModeEl.value || 'glb');
+      const meshColor = new THREE.Color(meshColorEl.value || '#bfbfbf');
+
+      let metal = 0.0, rough = 0.8;
+      const m = (matParamsEl.value || '').split(',').reduce((acc, kv) => {
+        const [k,v] = kv.split('=').map(s => String(s || '').trim());
+        if (!k || v==null) return acc;
+        acc[k] = Number(v);
+        return acc;
+      }, {});
+      if (Number.isFinite(m.metal)) metal = m.metal;
+      if (Number.isFinite(m.rough)) rough = m.rough;
+
+      const wantEdges = edgeEnabledEl.value === '1';
+      const edgeColor = new THREE.Color(edgeColorEl.value || '#444444');
+      const edgeDeg = Math.max(1, Math.min(90, Number(edgeDegEl.value || 20)));
+
+      // traverse
+      meshGroup.traverse(obj => {
+        if (!obj.isMesh) return;
+
+        // 元材質の保持/復帰
+        if (!obj.userData.__origMat) {
+          obj.userData.__origMat = obj.material;
+        }
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+
+        if (mode === 'glb') {
+          obj.material = obj.userData.__origMat;
+        } else if (mode === 'gray') {
+          obj.material = new THREE.MeshStandardMaterial({
+            color: meshColor,
+            metalness: metal,
+            roughness: rough,
+            side: THREE.FrontSide
+          });
+        } else if (mode === 'normal') {
+          obj.material = new THREE.MeshNormalMaterial({ side: THREE.FrontSide });
+        }
+
+        // 既存のエッジ線を除去
+        if (obj.userData.__edgeLine) {
+          obj.remove(obj.userData.__edgeLine);
+          obj.userData.__edgeLine.geometry.dispose();
+          obj.userData.__edgeLine.material.dispose();
+          obj.userData.__edgeLine = null;
+        }
+
+        // エッジ線（輪郭・稜線の強調）
+        if (wantEdges && obj.geometry) {
+          const eg = new THREE.EdgesGeometry(obj.geometry, edgeDeg);
+          const lm = new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.6 });
+          const line = new THREE.LineSegments(eg, lm);
+          line.userData.isEdgeLine = true;
+          obj.add(line);
+          obj.userData.__edgeLine = line;
+        }
+      });
+    }
+
     /***** GLB 読み込み *****/
     const loader = new GLTFLoader();
     loadGlbBtn?.addEventListener('click', async () => {
@@ -323,11 +359,10 @@
       loader.load(url, (gltf) => {
         URL.revokeObjectURL(url);
 
-        // 置き換え
         meshGroup.clear();
         meshGroup.add(gltf.scene);
 
-        applyUiVisuals();       // 指定色・質感・陰影設定
+        applyAppearance();     // 既定：GLB材質＋エッジ
         frameToObject(meshGroup, 1.3);
         updateStats(meshGroup);
       }, undefined, (err) => {
@@ -383,12 +418,10 @@
       let merged = mergeGeometries(geoms, false);
 
       // ====== 方向補正（軸変換） ======
-      // Three.js(Y-up) → Z-up 変換は X 軸 +90°
+      // Three.js(Y-up) → Z-up は X +90°
       const upAxis = (upAxisEl.value || 'Z').toUpperCase();
       const mOrient = new THREE.Matrix4();
-      if (upAxis === 'Z') {
-        mOrient.multiply(new THREE.Matrix4().makeRotationX(+Math.PI / 2));
-      }
+      if (upAxis === 'Z') mOrient.multiply(new THREE.Matrix4().makeRotationX(+Math.PI / 2));
       if (flipXEl.checked) mOrient.multiply(new THREE.Matrix4().makeRotationX(Math.PI));
       if (flipYEl.checked) mOrient.multiply(new THREE.Matrix4().makeRotationY(Math.PI));
       if (flipZEl.checked) mOrient.multiply(new THREE.Matrix4().makeRotationZ(Math.PI));
@@ -422,7 +455,7 @@
     });
 
     // 初期適用
-    applyUiVisuals();
+    applyAppearance();
   </script>
 </body>
 </html>
