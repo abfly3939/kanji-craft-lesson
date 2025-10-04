@@ -5,7 +5,7 @@
   <title>GLB → Preview & STL (Three.js)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { --side: 340px; }
+    :root { --side: 360px; }
     html, body { height: 100%; }
     body {
       margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", sans-serif;
@@ -18,12 +18,11 @@
     fieldset { border: 1px solid #ccc; margin: 0 0 12px; padding: 10px; }
     legend { font-weight: 600; }
     label { display:block; margin: 6px 0 2px; }
-    textarea, select, input[type="number"] { width: 100%; box-sizing: border-box; }
+    input[type="number"] { width: 100%; box-sizing: border-box; }
     button { width: 100%; padding: 10px; margin-top: 8px; }
     small { color:#666; }
     .row { display:flex; gap:8px; }
     .row > * { flex: 1; min-width: 0; }
-    code { background: #f6f6f6; padding: 1px 4px; border-radius: 3px; }
     .hint { font-size:12px; color:#555; }
     .sep { height:8px; }
   </style>
@@ -46,21 +45,22 @@
       <legend>.glb 読み込み</legend>
       <input id="glbFile" type="file" accept=".glb" />
       <button id="loadGlb">読み込んでプレビュー</button>
-      <small>※ GLB はメッシュをそのままプレビューします（色・材質は STL には反映されません）。</small>
+      <small>※ GLB はメッシュをそのままプレビューします（STLは無色です）。</small>
     </fieldset>
 
     <fieldset>
-      <legend>プレビュー・見やすさ</legend>
+      <legend>プレビュー表示</legend>
       <div class="row">
         <div>
           <label>背景色</label>
-          <select id="bgColor">
-            <option value="#e5e5e5" selected>ねずみ色（推奨）</option>
-            <option value="#ffffff">白</option>
-            <option value="#d0d0d0">濃いグレー</option>
-            <option value="#f0f0ff">ごく薄い青</option>
-          </select>
+          <input id="bgColor" type="color" value="#e5e5e5" />
         </div>
+        <div>
+          <label>メッシュ色（印刷物の色イメージ）</label>
+          <input id="meshColor" type="color" value="#bfbfbf" />
+        </div>
+      </div>
+      <div class="row">
         <div>
           <label>グリッド表示</label>
           <select id="gridVisible">
@@ -68,8 +68,12 @@
             <option value="0">非表示</option>
           </select>
         </div>
+        <div>
+          <label>金属/粗さ（見た目）</label>
+          <input id="matParams" type="text" value="metal=0.0,rough=0.9" />
+        </div>
       </div>
-      <small class="hint">ピンク味を抑えるため、デフォルト背景をねずみ色に変更しています。</small>
+      <small class="hint">ピンク味を抑え、背景は薄いグレー、メッシュ色をねずみ色に設定しています。</small>
     </fieldset>
 
     <fieldset>
@@ -95,14 +99,11 @@
         <option value="Y">Y（Three.js デフォルト）</option>
       </select>
       <div class="row">
-        <div>
-          <label><input id="flipX" type="checkbox" /> 上下反転（X軸 180°）</label>
-        </div>
-        <div>
-          <label><input id="flipY" type="checkbox" /> 前後反転（Y軸 180°）</label>
-        </div>
+        <div><label><input id="flipX" type="checkbox" /> X 反転（上下反転）</label></div>
+        <div><label><input id="flipY" type="checkbox" /> Y 反転（前後反転）</label></div>
+        <div><label><input id="flipZ" type="checkbox" /> Z 反転（左右反転）</label></div>
       </div>
-      <small class="hint">床面が壁面になる場合は、Up Axis を「Z」にしてから必要に応じて反転チェックをお試しください。</small>
+      <small class="hint">「先端が下になる」など上下逆転は、Z-up 変換時の回転符号が原因です（本版で修正済み）。必要なら反転チェックも併用してください。</small>
     </fieldset>
 
     <div class="row">
@@ -123,7 +124,7 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { STLExporter } from 'three/addons/exporters/STLExporter.js';
-    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+    import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
     /***** UI 参照 *****/
     const glbFileEl = document.getElementById('glbFile');
@@ -133,17 +134,20 @@
     const upAxisEl = document.getElementById('upAxis');
     const flipXEl = document.getElementById('flipX');
     const flipYEl = document.getElementById('flipY');
+    const flipZEl = document.getElementById('flipZ');
     const exportBtn = document.getElementById('export');
     const frameFitBtn = document.getElementById('frameFit');
     const statsEl = document.getElementById('stats');
     const bgColorEl = document.getElementById('bgColor');
     const gridVisibleEl = document.getElementById('gridVisible');
+    const meshColorEl = document.getElementById('meshColor');
+    const matParamsEl = document.getElementById('matParams');
 
     /***** Three.js セットアップ *****/
     const canvas = document.getElementById('viewport');
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#e5e5e5'); // ねずみ色
+    scene.background = new THREE.Color('#e5e5e5'); // 背景（好みで変更可能）
 
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 20000);
     camera.position.set(3, 2.5, 3);
@@ -151,7 +155,7 @@
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
 
-    // 少しクール寄りの白色光に（ピンク味を回避）
+    // 白色系のライティング（ピンク味回避）
     const light1 = new THREE.DirectionalLight(0xffffff, 1.0);
     light1.position.set(2, 3, 2);
     scene.add(light1);
@@ -161,13 +165,33 @@
     grid.position.y = -0.01;
     scene.add(grid);
 
-    // 表示用の親グループ（GLB をここに入れる）
+    // GLB を入れるグループ
     let meshGroup = new THREE.Group();
     scene.add(meshGroup);
 
     function applyUiVisuals() {
       scene.background = new THREE.Color(bgColorEl.value || '#e5e5e5');
       grid.visible = gridVisibleEl.value === '1';
+      // メッシュの表示色・質感（プレビュー専用）
+      const color = new THREE.Color(meshColorEl.value || '#bfbfbf');
+      let metal = 0.0, rough = 0.9;
+      const m = (matParamsEl.value || '').split(',').reduce((acc, kv) => {
+        const [k,v] = kv.split('=').map(s => String(s || '').trim());
+        if (!k || v==null) return acc;
+        acc[k] = Number(v);
+        return acc;
+      }, {});
+      if (Number.isFinite(m.metal)) metal = m.metal;
+      if (Number.isFinite(m.rough)) rough = m.rough;
+
+      meshGroup.traverse(obj => {
+        if (obj.isMesh) {
+          // 単色のプレビュー材質（両面表示）
+          obj.material = new THREE.MeshStandardMaterial({
+            color, metalness: metal, roughness: rough, side: THREE.DoubleSide
+          });
+        }
+      });
     }
 
     function resize() {
@@ -179,9 +203,8 @@
       camera.updateProjectionMatrix();
     }
     window.addEventListener('resize', resize);
-    [bgColorEl, gridVisibleEl].forEach(el => el.addEventListener('change', applyUiVisuals));
+    [bgColorEl, gridVisibleEl, meshColorEl, matParamsEl].forEach(el => el.addEventListener('change', applyUiVisuals));
     resize();
-    applyUiVisuals();
 
     (function animate(){
       requestAnimationFrame(animate);
@@ -189,7 +212,7 @@
       renderer.render(scene, camera);
     })();
 
-    /***** カメラフレーミング（BBから自動算出） *****/
+    /***** カメラフレーミング *****/
     function frameToObject(object, padding = 1.25) {
       const box = new THREE.Box3().setFromObject(object);
       if (!isFinite(box.min.x) || !isFinite(box.max.x)) return;
@@ -232,14 +255,7 @@
         meshGroup.clear();
         meshGroup.add(gltf.scene);
 
-        // マテリアルはプレビュー用（STLには反映されません）
-        gltf.scene.traverse((obj) => {
-          if (obj.isMesh && obj.material) {
-            if ('metalness' in obj.material) obj.material.metalness = 0.1;
-            if ('roughness' in obj.material) obj.material.roughness = 0.6;
-          }
-        });
-
+        applyUiVisuals();       // 指定のメッシュ色で上書き
         frameToObject(meshGroup, 1.3);
         updateStats(meshGroup);
       }, undefined, (err) => {
@@ -262,7 +278,7 @@
         return;
       }
 
-      // すべてのメッシュ（InstancedMesh を含む）のワールド変換を反映したジオメトリを収集
+      // すべてのメッシュ（InstancedMesh を含む）を実体化して収集
       const geoms = [];
       meshGroup.updateMatrixWorld(true);
 
@@ -275,12 +291,10 @@
           g.applyMatrix4(obj.matrixWorld);
           geoms.push(g);
         } else if (obj.isInstancedMesh && obj.geometry) {
-          // InstancedMesh: 各インスタンスの行列を展開して個別のジオメトリに
           const count = obj.count;
           for (let i = 0; i < count; i++) {
             obj.getMatrixAt(i, tmpInstMatrix);
             const g = obj.geometry.clone();
-            // ワールド行列 = 親までのワールド * インスタンス行列
             tmpObjMatrix.copy(obj.matrixWorld).multiply(tmpInstMatrix);
             g.applyMatrix4(tmpObjMatrix);
             geoms.push(g);
@@ -293,26 +307,21 @@
         return;
       }
 
-      // まとめて結合
-      const merged = mergeGeometries(geoms, false);
+      // 結合
+      let merged = mergeGeometries(geoms, false);
 
       // ====== 方向補正（軸変換） ======
-      // Three.js は Y-up。3Dプリンタ系は Z-up 前提が多い。
-      // Z-up: X軸に -90°回すと「Y-up → Z-up」になる。
+      // Three.js(Y-up) → Z-up 変換は X 軸に +90°が正（Z' = Y）
       const upAxis = (upAxisEl.value || 'Z').toUpperCase();
       const mOrient = new THREE.Matrix4();
       if (upAxis === 'Z') {
-        mOrient.multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2)); // Y→Z
+        mOrient.multiply(new THREE.Matrix4().makeRotationX(+Math.PI / 2)); // ← 修正点
       } // Y の場合は回転なし
 
-      if (flipXEl.checked) {
-        // 上下反転：X軸 180°
-        mOrient.multiply(new THREE.Matrix4().makeRotationX(Math.PI));
-      }
-      if (flipYEl.checked) {
-        // 前後反転：Y軸 180°
-        mOrient.multiply(new THREE.Matrix4().makeRotationY(Math.PI));
-      }
+      if (flipXEl.checked) mOrient.multiply(new THREE.Matrix4().makeRotationX(Math.PI));
+      if (flipYEl.checked) mOrient.multiply(new THREE.Matrix4().makeRotationY(Math.PI));
+      if (flipZEl.checked) mOrient.multiply(new THREE.Matrix4().makeRotationZ(Math.PI));
+
       merged.applyMatrix4(mOrient);
 
       // ====== 単位変換（scene units → mm） ======
@@ -322,6 +331,9 @@
       if (scaleToMM !== 1) {
         merged.applyMatrix4(new THREE.Matrix4().makeScale(scaleToMM, scaleToMM, scaleToMM));
       }
+
+      // ====== 欠け／くぼみ対策：頂点溶接で微小ギャップを抑制 ======
+      merged = mergeVertices(merged, 1e-6);
 
       // STL バイナリとして出力
       const exporter = new STLExporter();
