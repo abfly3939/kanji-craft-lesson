@@ -1,366 +1,70 @@
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8" />
-  <title>mcstructure → Preview & STL (Three.js)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    :root { --side: 320px; }
-    html, body { height: 100%; }
-    body {
-      margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", sans-serif;
-      display: grid; grid-template-columns: var(--side) 1fr; height: 100%;
-    }
-    aside { padding: 16px; border-right: 1px solid #ddd; overflow: auto; }
-    main { position: relative; background: #fff; }
-    #viewport { position:absolute; inset:0; display:block; }
-    fieldset { border: 1px solid #ccc; margin: 0 0 12px; padding: 10px; }
-    legend { font-weight: 600; }
-    label { display:block; margin: 6px 0 2px; }
-    textarea, select, input[type="number"] { width: 100%; box-sizing: border-box; }
-    button { width: 100%; padding: 10px; margin-top: 8px; }
-    small { color:#666; }
-    .row { display:flex; gap:8px; }
-    .row > * { flex: 1; min-width: 0; }
-    code { background: #f6f6f6; padding: 1px 4px; border-radius: 3px; }
-  </style>
+async function parseMcstructureFile(file) {
+  const buf = await file.arrayBuffer();
 
-  <!-- Three.js を import map で解決 -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.164.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.164.0/examples/jsm/"
+  // Little Endian を明示し、Buffer で渡す
+  const { parsed } = await nbt.parse(Buffer.from(buf), 'little');
+  const root = nbt.simplify(parsed);
+  console.log('NBT root (simplified):', root); // 構造確認用
+
+  // よくある配置：root.structure.* もしくは root.* 直下
+  const struct = root.structure ?? root;
+
+  // サイズ [x, y, z] または {x,y,z} の両対応
+  let size = struct.size;
+  if (!size) throw new Error('size 情報が見つかりません');
+  if (!Array.isArray(size)) size = [Number(size.x), Number(size.y), Number(size.z)];
+  const [sx, sy, sz] = size.map(Number);
+
+  // パレット抽出（Bedrock は block_palette が一般的）
+  let paletteEntries = [];
+  if (Array.isArray(struct.palette) && struct.palette[0]) {
+    const p0 = struct.palette[0];
+    const blockPalette = p0.block_palette ?? p0.BlockPalette ?? p0['block_palette'];
+    if (Array.isArray(blockPalette)) {
+      paletteEntries = blockPalette.map(e => e?.name ?? e?.Name ?? 'minecraft:unknown');
     }
   }
-  </script>
-</head>
-<body>
-  <aside>
-    <h2>mcstructure → STL（ブラウザ完結）</h2>
+  if (paletteEntries.length === 0) {
+    console.warn('palette が取得できませんでした。フォールバックとして index 0 を空気扱いします。');
+  }
 
-    <fieldset>
-      <legend>.mcstructure 読み込み</legend>
-      <input id="mcstructureFile" type="file" accept=".mcstructure" />
-      <button id="loadMc">読み込んでプレビュー</button>
-      <small>※ <b>.mcstructure は JSON ではなく NBT バイナリ</b>です。内部のパレットとブロック参照を解決してボクセル化します。</small>
-    </fieldset>
+  // block_indices：型の差異を包括的に復元
+  const indicesSrc = struct.block_indices ?? struct.BlockIndices ?? struct['block_indices'];
+  if (!indicesSrc) throw new Error('block_indices が見つかりません');
 
-    <fieldset>
-      <legend>代替入力（手動）</legend>
-      <label>モード</label>
-      <select id="mode">
-        <option value="positions">ブロック座標（JSON配列）</option>
-        <option value="bitmap">2Dビットマップ（文字列配列）</option>
-      </select>
-      <label>データ</label>
-      <textarea id="input" rows="10" spellcheck="false">{
-  "positions": [[0,0,0],[1,0,0],[2,0,0],[3,0,0],[0,1,0],[0,2,0],[3,1,0],[3,2,0],[0,3,0],[1,3,0],[2,3,0],[3,3,0]],
-  "size": 1
-}</textarea>
-      <small>
-        ・<b>座標モード</b>：<code>{"positions":[[x,y,z],...],"size":1}</code><br/>
-        ・<b>ビットマップ</b>：<code>{"bitmap":["0110","1111","0110"],"z":0,"size":1}</code>（'1' がブロック）
-      </small>
-    </fieldset>
+  const indices = [];
+  const pushAny = (v) => {
+    if (!v) return;
+    if (ArrayBuffer.isView(v)) indices.push(...v);
+    else if (Array.isArray(v)) indices.push(...v.map(Number));
+    else if (v.data && ArrayBuffer.isView(v.data)) indices.push(...v.data);
+    else if (v.value && Array.isArray(v.value)) indices.push(...v.value.map(Number));
+    else console.warn('未知の block_indices 片の形です:', v);
+  };
+  Array.isArray(indicesSrc) ? indicesSrc.forEach(pushAny) : pushAny(indicesSrc);
 
-    <fieldset>
-      <legend>プレビュー／出力設定</legend>
-      <div class="row">
-        <div>
-          <label>倍率</label>
-          <select id="scale">
-            <option value="0.25">1/4</option>
-            <option value="0.5">1/2</option>
-            <option value="1" selected>等倍</option>
-            <option value="2">×2</option>
-            <option value="4">×4</option>
-          </select>
-        </div>
-        <div>
-          <label>ボクセル基準サイズ（mm）</label>
-          <input id="voxelSize" type="number" value="2" step="0.1" min="0.1"/>
-        </div>
-      </div>
-      <small>STL は「(ボクセル基準サイズ × 倍率) mm」の立方体で出力します。</small>
-    </fieldset>
+  const total = sx * sy * sz;
+  if (indices.length < total) {
+    console.warn(`block_indices 長が不足 (${indices.length} < ${total})。並びや圧縮形式が異なる可能性があります。`);
+  }
 
-    <div class="row">
-      <button id="build">プレビューを更新</button>
-      <button id="export">STLを書き出し</button>
-    </div>
-    <small id="stats"></small>
-  </aside>
+  const isAirName = (name) => name === 'minecraft:air' || name === 'minecraft:cave_air' || name === 'minecraft:void_air';
+  const isAirIndex = (idx) => {
+    if (paletteEntries.length === 0) return idx === 0; // パレット不明時フォールバック
+    const name = paletteEntries[idx] ?? 'minecraft:unknown';
+    return isAirName(name);
+  };
 
-  <main>
-    <canvas id="viewport"></canvas>
-  </main>
-
-  <script type="module">
-    /***** ライブラリ読み込み（import map を使用） *****/
-    import * as THREE from 'three';
-    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-    import { STLExporter } from 'three/addons/exporters/STLExporter.js';
-    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-
-    // NBT パーサ（依存をバンドル）
-    import * as nbt from "https://esm.sh/prismarine-nbt@2.6.0?bundle";
-
-    /***** UI 参照 *****/
-    const modeEl = document.getElementById('mode');
-    const inputEl = document.getElementById('input');
-    const scaleEl = document.getElementById('scale');
-    const voxelSizeEl = document.getElementById('voxelSize');
-    const buildBtn = document.getElementById('build');
-    const exportBtn = document.getElementById('export');
-    const statsEl = document.getElementById('stats');
-    const mcFileEl = document.getElementById('mcstructureFile');
-    const loadMcBtn = document.getElementById('loadMc');
-
-    /***** Three.js セットアップ *****/
-    const canvas = document.getElementById('viewport');
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xffffff);
-
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
-    camera.position.set(80, 60, 80);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-
-    const light1 = new THREE.DirectionalLight(0xffffff, 1);
-    light1.position.set(1, 2, 1);
-    scene.add(light1);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
-
-    const grid = new THREE.GridHelper(200, 20);
-    grid.position.y = -0.01;
-    scene.add(grid);
-
-    let meshGroup = new THREE.Group();
-    scene.add(meshGroup);
-
-    function resize() {
-      const rect = canvas.parentElement.getBoundingClientRect();
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
-      renderer.setPixelRatio(ratio);
-      renderer.setSize(rect.width, rect.height, false);
-      camera.aspect = rect.width / rect.height;
-      camera.updateProjectionMatrix();
-    }
-    window.addEventListener('resize', resize);
-    resize();
-
-    (function animate(){
-      requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-    })();
-
-    /***** 入力→positions 配列 *****/
-    function parseManualInput() {
-      let data;
-      try {
-        data = JSON.parse(inputEl.value);
-      } catch (e) {
-        alert('JSON の構文エラーです。');
-        throw e;
-      }
-      const mode = modeEl.value;
-
-      if (mode === 'positions') {
-        if (!Array.isArray(data.positions)) throw new Error('positions 配列が必要です');
-        const size = Number(data.size ?? 1);
-        return { type: 'positions', positions: data.positions, size };
-      } else {
-        if (!Array.isArray(data.bitmap)) throw new Error('bitmap 配列が必要です');
-        const z = Number(data.z ?? 0);
-        const size = Number(data.size ?? 1);
-        const positions = [];
-        for (let y = 0; y < data.bitmap.length; y++) {
-          const row = String(data.bitmap[y]);
-          for (let x = 0; x < row.length; x++) {
-            if (row[x] === '1') positions.push([x, (data.bitmap.length - 1 - y), z]);
-          }
-        }
-        return { type: 'bitmap', positions, size };
+  // 走査順：x 最内、y 次、z 最外（x + y*sx + z*sx*sy）
+  const positions = [];
+  for (let z = 0; z < sz; z++) {
+    for (let y = 0; y < sy; y++) {
+      for (let x = 0; x < sx; x++) {
+        const idx = x + y * sx + z * sx * sy;
+        const pIndex = indices[idx] ?? 0;
+        if (!isAirIndex(pIndex)) positions.push([x, y, z]);
       }
     }
-
-    /***** mcstructure 読み込み → positions 生成（堅牢化版） *****/
-    async function parseMcstructureFile(file) {
-      const buf = await file.arrayBuffer();
-
-      // Buffer ではなく Uint8Array を渡す（ブラウザ互換）
-      const { parsed } = await nbt.parse(new Uint8Array(buf));
-      // ネストされた .value を除去してシンプルに
-      const root = nbt.simplify(parsed);
-      console.log('NBT root (simplified):', root); // 構造確認用
-
-      // よくある配置：root.structure.* もしくは root.* 直下
-      const struct = root.structure ?? root;
-
-      // サイズ [x, y, z] または {x,y,z} の両対応
-      let size = struct.size;
-      if (!size) throw new Error('size 情報が見つかりません');
-      if (!Array.isArray(size)) size = [Number(size.x), Number(size.y), Number(size.z)];
-      const [sx, sy, sz] = size.map(Number);
-
-      // パレット抽出（Bedrock は block_palette が一般的）
-      let paletteEntries = [];
-      if (Array.isArray(struct.palette) && struct.palette[0]) {
-        const p0 = struct.palette[0];
-        const blockPalette = p0.block_palette ?? p0.BlockPalette ?? p0['block_palette'];
-        if (Array.isArray(blockPalette)) {
-          paletteEntries = blockPalette.map(e => e?.name ?? e?.Name ?? 'minecraft:unknown');
-        }
-      }
-      if (paletteEntries.length === 0) {
-        console.warn('palette が取得できませんでした。フォールバックとして index 0 を空気扱いします。');
-      }
-
-      // block_indices：型の差異を包括的に復元
-      const indicesSrc = struct.block_indices ?? struct.BlockIndices ?? struct['block_indices'];
-      if (!indicesSrc) throw new Error('block_indices が見つかりません');
-
-      const indices = [];
-      const pushAny = (v) => {
-        if (!v) return;
-        if (ArrayBuffer.isView(v)) indices.push(...v);
-        else if (Array.isArray(v)) indices.push(...v.map(Number));
-        else if (v.data && ArrayBuffer.isView(v.data)) indices.push(...v.data);
-        else if (v.value && Array.isArray(v.value)) indices.push(...v.value.map(Number));
-        else console.warn('未知の block_indices 片の形です:', v);
-      };
-      Array.isArray(indicesSrc) ? indicesSrc.forEach(pushAny) : pushAny(indicesSrc);
-
-      const total = sx * sy * sz;
-      if (indices.length < total) {
-        console.warn(`block_indices 長が不足 (${indices.length} < ${total})。並びや圧縮形式が異なる可能性があります。`);
-      }
-
-      const isAirName = (name) => name === 'minecraft:air' || name === 'minecraft:cave_air' || name === 'minecraft:void_air';
-      const isAirIndex = (idx) => {
-        if (paletteEntries.length === 0) return idx === 0; // フォールバック：パレット不明なら index 0 を空気扱い
-        const name = paletteEntries[idx] ?? 'minecraft:unknown';
-        return isAirName(name);
-      };
-
-      // 走査順の前提：x 最内、y 次、z 最外（x + y*sx + z*sx*sy）
-      const positions = [];
-      for (let z = 0; z < sz; z++) {
-        for (let y = 0; y < sy; y++) {
-          for (let x = 0; x < sx; x++) {
-            const idx = x + y * sx + z * sx * sy;
-            const pIndex = indices[idx] ?? 0;
-            if (!isAirIndex(pIndex)) positions.push([x, y, z]);
-          }
-        }
-      }
-      return { positions, size: 1 };
-    }
-
-    /***** メッシュ生成・プレビュー *****/
-    function buildMeshFromPositions(positions) {
-      meshGroup.clear();
-
-      const voxelBase = Number(voxelSizeEl.value || 1);
-      const scale = Number(scaleEl.value || 1);
-      const unit = voxelBase * scale; // mm
-      const half = unit / 2;
-
-      // Box を一括結合して高速化
-      const geoms = [];
-      const box = new THREE.BoxGeometry(unit, unit, unit);
-      for (const [x, y, z] of positions) {
-        const g = box.clone();
-        g.translate(x * unit + half, y * unit + half, z * unit + half);
-        geoms.push(g);
-      }
-      if (geoms.length === 0) {
-        alert('ブロックがありません。');
-        return;
-      }
-      const merged = mergeGeometries(geoms, false);
-      merged.computeBoundingBox();
-
-      const mesh = new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.6 }));
-      meshGroup.add(mesh);
-
-      // カメラ自動調整
-      const bb = merged.boundingBox;
-      const sizeV = new THREE.Vector3().subVectors(bb.max, bb.min);
-      const center = new THREE.Vector3().addVectors(bb.min, bb.max).multiplyScalar(0.5);
-      const radius = sizeV.length() * 0.6 + unit;
-
-      controls.target.copy(center);
-      camera.position.copy(center).add(new THREE.Vector3(radius, radius * 0.75, radius));
-      camera.near = Math.max(0.1, unit * 0.1);
-      camera.far = Math.max(2000, radius * 10 + unit);
-      camera.updateProjectionMatrix();
-
-      statsEl.textContent =
-        `ブロック数: ${positions.length} / 立方体サイズ: ${unit.toFixed(2)} mm / ` +
-        `幅×奥行×高さ: ${sizeV.x.toFixed(2)} × ${sizeV.z.toFixed(2)} × ${sizeV.y.toFixed(2)} mm`;
-    }
-
-    function buildMesh() {
-      const { positions } = parseManualInput();
-      buildMeshFromPositions(positions);
-    }
-
-    /***** STL 出力 *****/
-    function exportSTL() {
-      if (meshGroup.children.length === 0) {
-        alert('先にプレビューを生成してください。');
-        return;
-      }
-      const allGeoms = [];
-      meshGroup.traverse(obj => {
-        if (obj.isMesh && obj.geometry) {
-          const g = obj.geometry.clone();
-          obj.updateMatrixWorld();
-          g.applyMatrix4(obj.matrixWorld);
-          allGeoms.push(g);
-        }
-      });
-      const merged = mergeGeometries(allGeoms, false);
-      const exporter = new STLExporter();
-      const stl = exporter.parse(new THREE.Mesh(merged), { binary: true });
-
-      const blob = new Blob([stl], { type: 'model/stl' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'structure_export.stl';
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
-
-    /***** イベント *****/
-    buildBtn.addEventListener('click', () => {
-      try { buildMesh(); } catch (e) { console.error(e); alert('プレビュー生成に失敗しました。'); }
-    });
-    exportBtn.addEventListener('click', () => {
-      try { exportSTL(); } catch (e) { console.error(e); alert('STL 書き出しに失敗しました。'); }
-    });
-    loadMcBtn?.addEventListener('click', async () => {
-      const f = mcFileEl?.files?.[0];
-      if (!f) { alert('.mcstructure ファイルを選択してください'); return; }
-      try {
-        const { positions } = await parseMcstructureFile(f);
-        // UI へ流し込んで可視化
-        modeEl.value = 'positions';
-        inputEl.value = JSON.stringify({ positions, size: 1 }, null, 2);
-        buildMeshFromPositions(positions);
-      } catch (e) {
-        console.error(e);
-        alert('mcstructure の読み込みに失敗しました。コンソールのログをご確認ください。');
-      }
-    });
-
-    // 初期プレビュー
-    try { buildMesh(); } catch {}
-  </script>
-</body>
-</html>
+  }
+  return { positions, size: 1 };
+}
